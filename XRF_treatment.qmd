@@ -1,0 +1,421 @@
+---
+title: "XRF_treatment"
+date: last-modified
+date-format: long
+author:
+  - Alain Queffelec
+format: 
+  html:
+    embed-resources: true
+    number-sections: true
+    code-fold: true
+    number-depth: 4
+    page-layout: full
+    toc: true
+    toc-expand: true
+execute:
+  echo: true
+  warning: false
+  cache: true
+editor: 
+  markdown: 
+    wrap: 72
+editor_options: 
+  chunk_output_type: console
+---
+
+This Quarto document serves to make CLR-biplots as in Codapack, for compositional analysis like the ones we get from pXRF.
+It is based on functions created by Julien Le Guirriec and the Nexus package from Nicolas Frerebeau.
+
+```{r Load the packages}
+#| output: false
+library(nexus)
+library(plotly)
+library(dimensio)
+library(isopleuros)
+library(readxl)
+library(plotly)
+```
+
+This chunk creates the functions. This code is 99% by Julien Le Guirriec I just modified it a bit becasue the use of the functions of the nexus package later implies that some normalizations are not necessary at this step becaue it is done later with the nexus functions.
+
+```{r Functions by Julien Le Guirriec modified by AQ}
+# modification_AQ : removal of normalization here since it done later by nexus:as_composition
+multiplicative_replacement <- function(df, index, factor = 0.65){
+  replace <- function(data, factor){
+    minimumdetected <- apply(data[],2,min, na.rm=TRUE) * factor # Factor to replace the <LOD values by, by default = 0.65
+    
+    for (i in 1:nrow(data)){
+      for (k in 1:ncol(data)){
+        if (is.na(data[i,k])) {
+          data[i,k] <- minimumdetected[k]
+        } 
+      }}
+    
+    return(data)
+  }
+  if(missing(index)) {
+    df <- replace(df, factor)
+    return(df)
+  }  else{
+    df[,index] <- replace(df[,index], factor)
+    return(df)
+  }
+  
+}
+
+# modification_AQ1 = removal of closing to 1 because I do it later with nexus:as_composition
+# modification_AQ2 = changing to scale = FALSE in the PCA because the scaling is done later with the nexus::transform_clr 
+PCA_plot <- function(ref_data, ref_data_id, ref_data_group, ref_data_name, proj_data_1, proj_data_1_id, proj_data_1_name, proj_data_2, proj_data_2_id, proj_data_2_name, plot_mode = TRUE, xpca = 1, ypca = 2) {
+  
+  xpca_lab <- paste("PC",xpca, sep = "")
+  ypca_lab <- paste("PC",ypca, sep = "")
+  
+  calib_pca <- function(df){
+    pca_results <- prcomp(df, center = TRUE, scale. = FALSE )
+    
+    
+    var_pca = pca_results$sdev^2 / sum(pca_results$sdev^2)
+    
+    return(list(pca_results, var_pca))
+  }
+  
+  if(missing(proj_data_1) | missing(proj_data_1_name) | missing(proj_data_1_id)){
+    
+    pca_results <- calib_pca(ref_data)
+    pca <- pca_results[[1]]
+    var_pca <- pca_results[[2]]
+    
+    pca_x <- pca$x
+    pca_ref_results <- cbind(pca_x[,c(xpca,ypca)], ref_data_id, ref_data_group)
+    
+    pca_ref_results <- as.data.frame(pca_ref_results)
+    colnames(pca_ref_results) <- c("PC1", "PC2", "Info", "Group")
+    
+    pca_plot <- ggplot(pca_ref_results, aes(x = as.numeric(PC1), y = as.numeric(PC2), color=Group, label=Info)) + 
+      xlab(paste(xpca_lab ,"(", round(var_pca[xpca], 2)*100,") %", sep="")) + 
+      ylab(paste(ypca_lab ,"(", round(var_pca[ypca], 2)*100,") %", sep="")) +
+      geom_point() + stat_ellipse() + theme_bw() + ggtitle(paste("PCA of", ref_data_name))
+    
+    if (plot_mode == TRUE){
+      return(pca_plot)
+    }
+    if (plot_mode == FALSE){
+      return(list(pca, pca_ref_results))
+    }
+  } else {
+    
+    if(missing(proj_data_2) | missing(proj_data_2_name) | missing(proj_data_2_id)){
+      
+      common_elements <- intersect(colnames(ref_data), colnames(proj_data_1))
+      
+      pca_results <- calib_pca(ref_data[,which(colnames(ref_data) %in% common_elements)])
+      
+      pca <- pca_results[[1]]
+      var_pca <- pca_results[[2]]
+      
+      pca_x <- pca$x
+      pca_ref_results <- cbind(pca_x[,c(xpca,ypca)], ref_data_id, ref_data_group)
+      
+      pca_proj_1_results <- predict(pca, proj_data_1[,which(colnames(proj_data_1) %in% common_elements)])
+      
+      pca_proj_1_results <- cbind(pca_proj_1_results[,c(xpca,ypca)], proj_data_1_id, proj_data_1_name)
+      
+      print(pca_proj_1_results)
+      
+      pca_ref_results <- as.data.frame(pca_ref_results)
+      pca_proj_1_results <- as.data.frame(pca_proj_1_results)
+      colnames(pca_ref_results) <- c("PC1", "PC2", "Info", "Group")
+      colnames(pca_proj_1_results) <- c("PC1", "PC2", "Info", "Group")
+      
+      pca_combined_results <- rbind(pca_ref_results, pca_proj_1_results)
+      
+      pca_plot <- ggplot(pca_ref_results, aes(x = as.numeric(PC1), y = as.numeric(PC2), color=Group, label=Info)) + 
+        xlab(paste(xpca_lab ,"(", round(var_pca[xpca], 2)*100,") %", sep="")) + 
+        ylab(paste(ypca_lab ,"(", round(var_pca[ypca], 2)*100,") %", sep="")) +
+        geom_point() + stat_ellipse() + theme_bw() + geom_point(data = pca_proj_1_results, aes(x = as.numeric(PC1), y = as.numeric(PC2)), shape = 18, size = 4) + ggtitle(paste("PCA of", ref_data_name, "and projection of", proj_data_1_name))
+      
+      
+      if (plot_mode == TRUE){
+        return(pca_plot)
+        
+      }
+      if (plot_mode == FALSE){
+        return(list(pca, pca_ref_results, pca_proj_1_results))
+      }  
+     
+    }else{
+      
+      common_elements <- Reduce(intersect, list(colnames(ref_data),colnames(proj_data_1), colnames(proj_data_2)))
+      
+      pca_results <- calib_pca(ref_data[,which(colnames(ref_data) %in% common_elements)])
+      
+      pca <- pca_results[[1]]
+      var_pca <- pca_results[[2]]
+      
+      pca_x <- pca$x
+      pca_ref_results <- cbind(pca_x[,c(xpca,ypca)], ref_data_id, ref_data_group)
+      
+      pca_proj_1_results <- predict(pca, proj_data_1[,which(colnames(proj_data_1) %in% common_elements)])
+      pca_proj_1_results <- cbind(pca_proj_1_results[,c(xpca,ypca)], proj_data_1_id, proj_data_1_name)
+      
+      pca_proj_2_results <- predict(pca, proj_data_2[,which(colnames(proj_data_1) %in% common_elements)])
+      pca_proj_2_results <- cbind(pca_proj_2_results[,c(xpca,ypca)], proj_data_2_id, proj_data_2_name)
+      
+      pca_ref_results <- as.data.frame(pca_ref_results)
+      pca_proj_1_results <- as.data.frame(pca_proj_1_results)
+      pca_proj_2_results <- as.data.frame(pca_proj_2_results)
+      colnames(pca_ref_results) <- c("PC1", "PC2", "Info", "Group")
+      colnames(pca_proj_1_results) <- c("PC1", "PC2", "Info", "Group")
+      colnames(pca_proj_2_results) <- c("PC1", "PC2", "Info", "Group")
+      
+      
+      pca_plot <- ggplot(pca_ref_results, aes(x = as.numeric(PC1), y = as.numeric(PC2), color=Group, label=Info)) + 
+        xlab(paste(xpca_lab ,"(", round(var_pca[xpca], 2)*100,") %", sep="")) + 
+        ylab(paste(ypca_lab ,"(", round(var_pca[ypca], 2)*100,") %", sep="")) +
+        geom_point() + stat_ellipse() + theme_bw() + geom_point(data = pca_proj_1_results, aes(x = as.numeric(PC1), y = as.numeric(PC2)), shape = 18, size = 1) + geom_point(data = pca_proj_2_results, aes(x = as.numeric(PC1), y = as.numeric(PC2)), shape = 15, size = 1) + ggtitle(paste("PCA of", ref_data_name, "and projection of", proj_data_1_name, "and", proj_data_2_name))
+      
+      
+      if (plot_mode == TRUE){
+        return(pca_plot)
+        
+      }
+      if (plot_mode == FALSE){
+        return(list(pca, pca_ref_results, pca_proj_1_results, pca_proj_2_results))
+      }
+      
+    }
+    
+  }
+  ggplotly(pca_plot)
+}
+
+PCA_plot_3D <- function(ref_data, ref_data_id, ref_data_group, ref_data_name, proj_data_1, proj_data_1_id, proj_data_1_name, proj_data_2, proj_data_2_id, proj_data_2_name, plot_mode = TRUE) {
+  
+  calib_pca <- function(df){
+    pca_results <- prcomp(df, center = TRUE, scale. = FALSE )
+    
+    
+    var_pca = pca_results$sdev^2 / sum(pca_results$sdev^2)
+    
+    return(list(pca_results, var_pca))
+  }
+  
+  if(missing(proj_data_1) | missing(proj_data_1_name) | missing(proj_data_1_id)){
+    
+    pca_results <- calib_pca(ref_data)
+    pca <- pca_results[[1]]
+    var_pca <- pca_results[[2]]
+    
+    pca_x <- pca$x
+    
+    pca_ref_results <- cbind(pca_x[,c(1,2,3)], ref_data_id, ref_data_group)
+    
+    pca_ref_results <- as.data.frame(pca_ref_results)
+    colnames(pca_ref_results) <- c("PC1", "PC2","PC3", "Info", "Group")
+    
+    pca_plot <- plot_ly(pca_ref_results, x = ~PC1, y = ~PC2, z = ~PC3, color = ~Group, marker = list(size=2), text = ~paste("Info: ", Info))
+    
+    pca_plot <- pca_plot %>% add_markers()
+    
+    pca_plot <- pca_plot %>% layout(scene = list(xaxis = list(title = paste("PC1 (", round(var_pca[1], 2)*100,") %", sep="")),
+                                                 
+                                                 yaxis = list(title = paste("PC2 (", round(var_pca[2], 2)*100,") %", sep="")),
+                                                 
+                                                 zaxis = list(title = paste("PC3 (", round(var_pca[3], 2)*100,") %", sep=""))))
+    
+    if (plot_mode == TRUE){
+      return(pca_plot)
+    }
+    if (plot_mode == FALSE){
+      return(list(pca, pca_ref_results))
+    }
+  } else {
+    
+    if(missing(proj_data_2) | missing(proj_data_2_name) | missing(proj_data_2_id)){
+      
+      common_elements <- intersect(colnames(ref_data), colnames(proj_data_1))
+      
+      pca_results <- calib_pca(ref_data[,which(colnames(ref_data) %in% common_elements)])
+      
+      pca <- pca_results[[1]]
+      var_pca <- pca_results[[2]]
+      
+      pca_x <- pca$x
+      
+      pca_ref_results <- cbind(pca_x[,c(1,2,3)], ref_data_id, ref_data_group)
+      
+      pca_ref_results <- as.data.frame(pca_ref_results)
+      
+      
+      pca_proj_1_results <- predict(pca, proj_data_1[,which(colnames(proj_data_1) %in% common_elements)])
+      
+      pca_proj_1_results <- cbind(pca_proj_1_results[,c(1,2,3)], proj_data_1_id, proj_data_1_name)
+      
+      #print(pca_proj_1_results)
+      
+      pca_ref_results <- as.data.frame(pca_ref_results)
+      pca_proj_1_results <- as.data.frame(pca_proj_1_results)
+      colnames(pca_ref_results) <- c("PC1", "PC2","PC3", "Info", "Group")
+      colnames(pca_proj_1_results) <- c("PC1", "PC2","PC3", "Info", "Group")
+      
+      pca_plot <- plot_ly(pca_ref_results, x = ~PC1, y = ~PC2, z = ~PC3, color = ~Group, marker = list(size=2), text = ~paste("Info: ", Info))
+      
+      pca_plot <- pca_plot %>% add_markers()
+      
+      pca_plot <- pca_plot %>% add_trace(data = pca_proj_1_results, type='scatter3d', mode = 'markers')
+      
+      pca_plot <- pca_plot %>% layout(scene = list(xaxis = list(title = paste("PC1 (", round(var_pca[1], 2)*100,") %", sep="")),
+                                                   
+                                                   yaxis = list(title = paste("PC2 (", round(var_pca[2], 2)*100,") %", sep="")),
+                                                   
+                                                   zaxis = list(title = paste("PC3 (", round(var_pca[3], 2)*100,") %", sep=""))))
+      
+      if (plot_mode == TRUE){
+        return(pca_plot)
+      }
+      if (plot_mode == FALSE){
+        return(list(pca, pca_ref_results, pca_proj_1_results))
+      }  
+      
+      
+      
+    }else{
+      
+      common_elements <- Reduce(intersect, list(colnames(ref_data),colnames(proj_data_1), colnames(proj_data_2)))
+      
+      pca_results <- calib_pca(ref_data[,which(colnames(ref_data) %in% common_elements)])
+      
+      pca <- pca_results[[1]]
+      var_pca <- pca_results[[2]]
+      
+      pca_x <- pca$x
+      pca_ref_results <- cbind(pca_x[,c(1,2,3)], ref_data_id, ref_data_group)
+      
+      pca_proj_1_results <- predict(pca, proj_data_1[,which(colnames(proj_data_1) %in% common_elements)])
+      pca_proj_1_results <- cbind(pca_proj_1_results[,c(1,2,3)], proj_data_1_id, proj_data_1_name)
+      
+      pca_proj_2_results <- predict(pca, proj_data_2[,which(colnames(proj_data_1) %in% common_elements)])
+      pca_proj_2_results <- cbind(pca_proj_2_results[,c(1,2,3)], proj_data_2_id, proj_data_2_name)
+      
+      pca_ref_results <- as.data.frame(pca_ref_results)
+      pca_proj_1_results <- as.data.frame(pca_proj_1_results)
+      pca_proj_2_results <- as.data.frame(pca_proj_2_results)
+      colnames(pca_ref_results) <- c("PC1", "PC2","PC3", "Info", "Group")
+      colnames(pca_proj_1_results) <- c("PC1", "PC2","PC3", "Info", "Group")
+      colnames(pca_proj_2_results) <- c("PC1", "PC2","PC3", "Info", "Group")
+      
+      
+      pca_plot <- plot_ly(pca_ref_results, x = ~PC1, y = ~PC2, z = ~PC3, color = ~Group, marker = list(size=2), text = ~paste("Info: ", Info))
+      
+      pca_plot <- pca_plot %>% add_markers()
+      
+      pca_plot <- pca_plot %>% add_trace(data = pca_proj_1_results, type='scatter3d', mode = 'markers')
+      pca_plot <- pca_plot %>% add_trace(data = pca_proj_2_results, type='scatter3d', mode = 'markers')
+      
+      pca_plot <- pca_plot %>% layout(scene = list(xaxis = list(title = paste("PC1 (", round(var_pca[1], 2)*100,") %", sep="")),
+                                                   
+                                                   yaxis = list(title = paste("PC2 (", round(var_pca[2], 2)*100,") %", sep="")),
+                                                   
+                                                   zaxis = list(title = paste("PC3 (", round(var_pca[3], 2)*100,") %", sep=""))))
+      
+      
+      if (plot_mode == TRUE){
+        return(pca_plot)
+      }
+      if (plot_mode == FALSE){
+        return(list(pca, pca_ref_results, pca_proj_1_results, pca_proj_2_results))
+      }
+      
+    }
+    
+  }
+  
+}
+```
+
+Here we load the data. There are 2 possibilities, whether with a line of code and the name of the csv file, or considering the user loads the data with the "Import Dataset" button in R Studio.
+
+```{r Load data read.csv}
+#| eval: false #here eval false because I will use the Excel file of ochre
+
+data <- read.csv("MAPLA.csv", sep=",") # Import csv which has first the sample names, then the composition in ppm
+
+sample_ID <- data[,1] # Need to specify the columns of data which sample informations and not compositional data
+data <- data[,-1] # remove the information column(s) to keep only the compositional data
+data[data == "<LOD"] <- NA # replace "<LOD" by "NA"
+colnames(data)<- c("Al", "Si", "K", "Ca", "Ti", "Mn", "Fe", "Co","Ni", "Cu","Zn", "As", "Rb", "Sr", "Y", "Zr", "Sn", "Bi") # change the name of columns if necessary
+data[] <- lapply(data[], as.numeric) # puts every column to numeric since it was not the case since some columns contained text
+```
+
+Here we load prepare data in te DATA-Geol excel file. Some lines are optional due to different format of files by different researchers/equipments. These lines also have to be selected or not before rendering the Quarto document.
+
+```{r Load data read_excel}
+
+data = read_excel("DATA-Geol.xlsx",sheet = "VAR-13") # put the loaded dataset in an object called data
+sample_ID <- data[,c(1:4)] # Need to specify the columns of data which sample informations and not compositional data
+data <- data[,-c(1:4)] # remove the information column(s) to keep only the compositional data
+#data[data == "<LOD"] <- NA # replace "<LOD" by "NA"
+#colnames(data)<- c("Al", "Si", "K", "Ca", "Ti", "Mn", "Fe", "Co","Ni", "Cu","Zn", "As", "Rb", "Sr", "Y", "Zr", "Sn", "Bi") # change the name of columns if necessary
+#data[] <- lapply(data[], as.numeric) # puts every column to numeric since it was not the case since some columns contained text
+```
+
+```{r pretreatment data}
+data = multiplicative_replacement(data, factor = 0.65) # Replace NA values by 0.65 of the lowest value of the column
+
+data=cbind(sample_ID,data) # Paste again the Sample_ID and the data
+
+data_compo = nexus::as_composition(data,  #crée l'objet de composition en fermant toutes les lignes à 1
+                            groups = 2) # prend la colonne 2 comme groupe
+```
+
+```{r CLR and ALR treatment with nexus function}
+Object_CLR = nexus::transform_clr(data_compo)
+
+Object_ALR = transform_alr(data_compo, j=1) # j= X est la colonne de l'élément avec lequel on veut normaliser (sans compter les colonnes autres, seulement les colonnes géochimie)
+
+```
+
+```{r CLR biplot}
+clr_pca <- dimensio::pca(Object_CLR@.Data, scale = FALSE)
+dimensio::screeplot(clr_pca) # screeplot de l'ACP
+viz_individuals(clr_pca, 
+                #highlight = get_groups(data_compo),
+                pch = 16) 
+viz_variables(clr_pca)
+
+
+ggplotly( # pour pouvoir cliquer sur les points et aovir leurs infos en ggplotly... pas moyen de mettre ça dans la fonction je sais pas pkoi.
+  PCA_plot(ref_data = Object_CLR, # possibilité ici de ne garder que certains élément chimiques en sélectionnant les bonnes colonnes
+            ref_data_id = data$Sample,
+            ref_data_group = data$Outcrop,
+            ref_data_name = "data 13 elements",
+            xpca = 1, #number of the component to be plotted on the x axis (default = 1)
+            ypca = 2)
+  )
+
+PCA_plot_3D(ref_data = Object_CLR,
+            ref_data_id = data$Sample,
+            ref_data_group = data$Outcrop,
+            ref_data_name = "CLR data"
+            )
+```
+
+```{r ternary diagrams avec isopleuros}
+
+## Cu-Sn-Pb ternary plot
+AlSiTi <- data_compo[, c("Al", "Si", "Ti")]
+ternary_plot(AlSiTi)
+ternary_grid()
+
+```
+
+```{r}
+library(ggtern)
+col <- c("blue", "red","yellow", "darkgreen", "green", "orange", "violet", "purple", "black", "brown","lightblue", "grey")
+
+plot = ggtern(data,aes(As*100/Fe,Ti/Fe,V/Fe,col=Outcrop))
+plot + geom_point() + scale_color_manual("Legend",values = col,labels=levels(as.factor(data$Outcrop)))
+plot + geom_mean_ellipse()
+```
+
